@@ -1,16 +1,18 @@
 import React, { Component } from "react"
 
-interface IPoint {
-  x: number
-  y: number
-}
-
-interface ISize {
+interface IRect {
+  left: number
+  top: number
   width: number
   height: number
 }
 
-type IRect = IPoint & ISize
+const RectZero = {
+  left: 0,
+  top: 0,
+  width: 0,
+  height: 0
+}
 
 interface State {
   content: string
@@ -19,16 +21,16 @@ interface State {
 }
 
 function getChildIndex(
-  node: HTMLElement,
+  elem: HTMLElement,
   filter: (elem: Element) => boolean
 ): number {
-  const parent = node.parentElement
+  const parent = elem.parentElement
   if (parent === null) {
     return -1
   }
   return Array.from(parent.children)
     .filter(e => !filter(e))
-    .indexOf(node)
+    .indexOf(elem)
 }
 
 function inserted<T>(array: T[], elem: T, toIndex: number) {
@@ -43,13 +45,52 @@ function removeCharacterAtIndex(str: string, index: number): string {
   return str.substr(0, index) + str.substr(index + 1)
 }
 
-// DOMツリーの末端をたどる
-function walkTreeTermination(node: Node, callback: (node: Node) => boolean) {
-  if (node.childNodes.length === 0) {
-    callback(node)
+// DOMツリーの末端をたどる. callback の戻り値が true なら break
+function walkTreeTermination(
+  elem: Element,
+  callback: (elem: Element) => boolean
+): boolean {
+  if (elem.children.length === 0) {
+    return callback(elem)
   } else {
-    Array.from(node.childNodes).forEach(n => walkTreeTermination(n ,callback))
+    for (const n of Array.from(elem.children)) {
+      if (walkTreeTermination(n, callback)) {
+        return true
+      }
+    }
   }
+  return false
+}
+
+function terminalElements(rootElement: Element): Element[] {
+  const elements: Element[] = []
+  walkTreeTermination(rootElement, elem => {
+    elements.push(elem)
+    return false
+  })
+  return elements
+}
+
+// terminationElements は必ずツリー全体を走査するのでこっちのほうが早いかも
+function elementForTreeIndex(
+  rootElement: Element,
+  index: number,
+  skip: (elem: Element) => boolean
+): Element | null {
+  // DOMツリーの末端の要素をカウントしていく
+  let i = 0
+  let foundElement: Element | null = null
+  walkTreeTermination(rootElement, elem => {
+    if (!skip(elem)) {
+      if (i === index) {
+        foundElement = elem
+        return true
+      }
+      i++
+    }
+    return false
+  })
+  return foundElement
 }
 
 export class Editor extends Component<{}, State> {
@@ -59,8 +100,8 @@ export class Editor extends Component<{}, State> {
     cursorIndex: 0
   }
 
-  private textarea: HTMLTextAreaElement | null = null
-  private content: HTMLElement | null = null
+  private textareaElement: HTMLTextAreaElement | null = null
+  private contentElement: HTMLElement | null = null
 
   // 変換中か
   private composition = false
@@ -93,10 +134,10 @@ export class Editor extends Component<{}, State> {
 
   // 現在のカーソル位置にテキストエリアに入力した文字列を挿入する
   private fixTextarea = () => {
-    if (this.textarea === null) {
+    if (this.textareaElement === null) {
       return
     }
-    const text = this.textarea.value
+    const text = this.textareaElement.value
     this.setState({
       inputText: "",
       cursorIndex: this.state.cursorIndex + text.length,
@@ -119,38 +160,36 @@ export class Editor extends Component<{}, State> {
   }
 
   private cursorRectForIndex = (index: number): IRect => {
-    const elem = this.elementForCursorIndex(index)
+    if (this.contentElement === null) {
+      return RectZero
+    }
+    const elems = terminalElements(this.contentElement).filter(
+      e => !isCursor(e)
+    )
+    const width = 10
+
+    if (index === 0) {
+      const elem = elems[0]
+      const rect = elem.getBoundingClientRect()
+      return {
+        left: rect.left,
+        top: rect.top,
+        width,
+        height: rect.height
+      }
+    }
+
+    const elem = elems[index - 1]
     if (elem === null) {
-      return { x: 0, y: 0, width: 0, height: 0 }
+      throw new Error(`cursorIndex が不正: ${index}/${elems.length}`)
     }
     const rect = elem.getBoundingClientRect()
     return {
-      x: rect.left,
-      y: rect.top,
-      width: rect.width,
+      left: rect.left + rect.width,
+      top: rect.top,
+      width,
       height: rect.height
     }
-  }
-
-  private elementForCursorIndex = (index: number): HTMLElement|null => {
-    if (this.textarea === null || this.content === null) {
-      return null
-    }
-    // DOMツリーの末端の要素を文字としてたどっていく
-    this.content.children
-    const charChildren = Array.from(this.content.children).filter(
-      e => 
-    )
-    let i = 0
-    walkTreeTermination(this.content, node => {
-      if (!isCursor(node as HTMLElement)) {
-        i++
-      }
-      i === index
-    })
-    let i = Math.min(charChildren.length - 1, Math.max(0, index))
-    const elem = charChildren[i]
-    return elem
   }
 
   render() {
@@ -159,12 +198,12 @@ export class Editor extends Component<{}, State> {
     return (
       <div>
         <textarea
-          ref={c => (this.textarea = c)}
+          ref={c => (this.textareaElement = c)}
           value={this.state.inputText}
           style={{
             position: "absolute",
-            left: cursorRect.x,
-            top: cursorRect.y,
+            left: cursorRect.left,
+            top: cursorRect.top,
             zIndex: 999,
             border: "1px solid red",
             opacity: 0.2,
@@ -188,12 +227,11 @@ export class Editor extends Component<{}, State> {
           onCompositionUpdate={e => console.log("oncompositionupdate", e.data)}
         />
         <div
-          ref={c => (this.content = c)}
           onClick={e => {
-            if (this.textarea === null) {
+            if (this.textareaElement === null) {
               return
             }
-            this.textarea.focus()
+            this.textareaElement.focus()
             const bounds = (e.target as HTMLElement).getBoundingClientRect()
             const isRight = e.clientX - bounds.left > bounds.width / 2
             const cursorIndex =
@@ -209,24 +247,25 @@ export class Editor extends Component<{}, State> {
           <div
             style={{
               position: "absolute",
-              left: cursorRect.x,
-              top: cursorRect.y,
+              left: cursorRect.left,
+              top: cursorRect.top,
               width: "3px",
               height: cursorRect.height,
               background: "red",
               pointerEvents: "none"
             }}
           />
-
-          <b>
-            {inserted(
-              this.state.content.split("").map(c => <span>{c}</span>),
-              <span style={{ pointerEvents: "none" }}>
-                {this.state.inputText}
-              </span>,
-              this.state.cursorIndex
-            )}
-          </b>
+          <div ref={c => (this.contentElement = c)}>
+            <b>
+              {inserted(
+                this.state.content.split("").map(c => <span>{c}</span>),
+                <span style={{ pointerEvents: "none" }}>
+                  {this.state.inputText}
+                </span>,
+                this.state.cursorIndex
+              )}
+            </b>
+          </div>
         </div>
         <div>cursorIndex: {this.state.cursorIndex}</div>
       </div>
