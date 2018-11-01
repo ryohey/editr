@@ -71,28 +71,6 @@ function terminalElements(rootElement: Element): Element[] {
   return elements
 }
 
-// terminationElements は必ずツリー全体を走査するのでこっちのほうが早いかも
-function elementForTreeIndex(
-  rootElement: Element,
-  index: number,
-  skip: (elem: Element) => boolean
-): Element | null {
-  // DOMツリーの末端の要素をカウントしていく
-  let i = 0
-  let foundElement: Element | null = null
-  walkTreeTermination(rootElement, elem => {
-    if (!skip(elem)) {
-      if (i === index) {
-        foundElement = elem
-        return true
-      }
-      i++
-    }
-    return false
-  })
-  return foundElement
-}
-
 export class Editor extends Component<{}, State> {
   public state: State = {
     content: "Hello, world",
