@@ -1,4 +1,4 @@
-import React, { Component } from "react"
+import React, { Component, ReactNode } from "react"
 
 interface IRect {
   left: number
@@ -71,6 +71,21 @@ function terminalElements(rootElement: Element): Element[] {
   return elements
 }
 
+function mapContentToComponent(content: string): ReactNode {
+  if (content === "\n") {
+    return <br />
+  }
+  return (
+    <span
+      style={{
+        whiteSpace: "pre"
+      }}
+    >
+      {content}
+    </span>
+  )
+}
+
 export class Editor extends Component<{}, State> {
   public state: State = {
     content: "Hello, world",
@@ -99,14 +114,31 @@ export class Editor extends Component<{}, State> {
 
   private onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     console.log("keydown", e.key)
-    if (e.key === "Backspace") {
-      this.setState({
-        content: removeCharacterAtIndex(
+    switch (e.key) {
+      case "Backspace": {
+        const content = removeCharacterAtIndex(
           this.state.content,
           this.state.cursorIndex - 1
-        ),
-        cursorIndex: this.state.cursorIndex - 1
-      })
+        )
+        this.setState({
+          content,
+          cursorIndex: Math.max(0, this.state.cursorIndex - 1)
+        })
+        break
+      }
+      case "ArrowLeft":
+        this.setState({
+          cursorIndex: Math.max(0, this.state.cursorIndex - 1)
+        })
+        break
+      case "ArrowRight": {
+        const elems = this.getContentTerminalElements()
+        const maxIndex = elems !== null ? elems.length : 0
+        this.setState({
+          cursorIndex: Math.min(maxIndex, this.state.cursorIndex + 1)
+        })
+        break
+      }
     }
   }
 
@@ -137,33 +169,48 @@ export class Editor extends Component<{}, State> {
     console.log("oncompositionend", e.data)
   }
 
+  private getContentTerminalElements = (): Element[] | null => {
+    if (this.contentElement === null) return null
+
+    return terminalElements(this.contentElement).filter(e => !isCursor(e))
+  }
+
   private cursorRectForIndex = (index: number): IRect => {
-    if (this.contentElement === null) {
+    const elems = this.getContentTerminalElements()
+    if (elems === null) {
       return RectZero
     }
-    const elems = terminalElements(this.contentElement).filter(
-      e => !isCursor(e)
-    )
-    const width = 10
 
-    if (index === 0) {
-      const elem = elems[0]
+    // 横幅は使われない
+    const width = -1
+
+    if (elems.length === 0) {
+      return {
+        left: 0,
+        top: 0,
+        width,
+        height: 20 // TODO: 一行分の大きさを計算する
+      }
+    }
+
+    if (index === elems.length) {
+      const elem = elems[elems.length - 1]
       const rect = elem.getBoundingClientRect()
       return {
-        left: rect.left,
+        left: rect.left + rect.width,
         top: rect.top,
         width,
         height: rect.height
       }
     }
 
-    const elem = elems[index - 1]
-    if (elem === null) {
+    const elem = elems[index]
+    if (elem === undefined) {
       throw new Error(`cursorIndex が不正: ${index}/${elems.length}`)
     }
     const rect = elem.getBoundingClientRect()
     return {
-      left: rect.left + rect.width,
+      left: rect.left,
       top: rect.top,
       width,
       height: rect.height
@@ -236,7 +283,7 @@ export class Editor extends Component<{}, State> {
           <div ref={c => (this.contentElement = c)}>
             <b>
               {inserted(
-                this.state.content.split("").map(c => <span>{c}</span>),
+                this.state.content.split("").map(mapContentToComponent),
                 <span style={{ pointerEvents: "none" }}>
                   {this.state.inputText}
                 </span>,
@@ -244,6 +291,9 @@ export class Editor extends Component<{}, State> {
               )}
             </b>
           </div>
+        </div>
+        <div>
+          <pre>{this.state.content}</pre>
         </div>
         <div>cursorIndex: {this.state.cursorIndex}</div>
       </div>
