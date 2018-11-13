@@ -28,6 +28,11 @@ interface State {
   inputText: string
   cursorIndex: number
   cursorRect: IRect
+  contentElement: HTMLElement | null
+  textareaElement: HTMLTextAreaElement | null
+
+  // 変換中か
+  composition: boolean
 }
 
 function getChildIndex(
@@ -138,93 +143,136 @@ const cursorRectForIndex = (index: number, inElement: Element): IRect => {
   }
 }
 
+const removeCharacterAtCursor = (state: State): State => {
+  const index = state.cursorIndex - 1
+  const content = removeCharacterAtIndex(state.content, index)
+  return {
+    ...state,
+    content,
+    cursorIndex: Math.max(0, index)
+  }
+}
+
+const moveCursorDelta = (delta: number) => (state: State): State => {
+  if (state.contentElement === null) {
+    return state
+  }
+  const elems = terminalElements(state.contentElement)
+  const maxIndex = elems !== null ? elems.length : 0
+  const index = state.cursorIndex + delta
+  return {
+    ...state,
+    cursorIndex: Math.min(maxIndex, Math.max(0, index))
+  }
+}
+
+// 現在のカーソル位置にテキストエリアに入力した文字列を挿入する
+const fixTextarea = (state: State): State => {
+  if (state.textareaElement === null) {
+    return state
+  }
+  const text = state.textareaElement.value
+  return {
+    ...state,
+    composition: false,
+    inputText: "",
+    cursorIndex: state.cursorIndex + text.length,
+    content: inserted(state.content.split(""), text, state.cursorIndex).join("")
+  }
+}
+
+const moveCursorWithClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  // target はすぐ解放されるのでキャプチャしておく
+  const target = e.target as HTMLElement
+  return (state: State): State => {
+    if (state.textareaElement === null) {
+      return state
+    }
+    state.textareaElement.focus()
+    const bounds = target.getBoundingClientRect()
+    const isRight = e.clientX - bounds.left > bounds.width / 2
+    const cursorIndex = getChildIndex(target, isCursor) + (isRight ? 1 : 0)
+    return {
+      ...state,
+      inputText: "",
+      cursorIndex
+    }
+  }
+}
+
+// 実際に文字を描画している要素が生成されたときにその要素を設定し、カーソル位置の計算を行う
+const updateContentElement = (c: HTMLElement | null) => (
+  state: State
+): State | null => {
+  if (c === null) {
+    return null
+  }
+  const cursorRect = cursorRectForIndex(state.cursorIndex, c)
+  const nextState: Partial<State> = {}
+
+  if (!rectEqual(cursorRect, state.cursorRect)) {
+    nextState.cursorRect = cursorRect
+  }
+  if (c !== state.contentElement) {
+    nextState.contentElement = c
+  }
+  if (Object.keys(nextState).length === 0) {
+    return null
+  }
+  return {
+    ...state,
+    ...nextState
+  }
+}
+
 export class Editor extends Component<{}, State> {
   public state: State = {
     content: "Hello, world",
     inputText: "",
     cursorIndex: 0,
-    cursorRect: RectZero
+    cursorRect: RectZero,
+    contentElement: null,
+    textareaElement: null,
+    composition: false
   }
-
-  private textareaElement: HTMLTextAreaElement | null = null
-  private contentElement: HTMLElement | null = null
-
-  // 変換中か
-  private composition = false
 
   private onChangeTextarea(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const text = e.currentTarget.value
 
-    if (this.composition) {
+    if (this.state.composition) {
       // 変換中は確定しない
       this.setState({
         inputText: text
       })
     } else {
-      this.fixTextarea()
+      this.setState(fixTextarea)
     }
-  }
-
-  private removeCharacter(index: number) {
-    const content = removeCharacterAtIndex(this.state.content, index)
-    this.setState({
-      content,
-      cursorIndex: Math.max(0, index)
-    })
-  }
-
-  private moveCursor(index: number) {
-    if (this.contentElement === null) {
-      return
-    }
-    const elems = terminalElements(this.contentElement)
-    const maxIndex = elems !== null ? elems.length : 0
-    this.setState({
-      cursorIndex: Math.min(maxIndex, Math.max(0, index))
-    })
   }
 
   private onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     console.log("keydown", e.key)
     switch (e.key) {
       case "Backspace":
-        this.removeCharacter(this.state.cursorIndex - 1)
+        this.setState(removeCharacterAtCursor)
         break
       case "ArrowLeft":
-        this.moveCursor(this.state.cursorIndex - 1)
+        this.setState(moveCursorDelta(-1))
         break
       case "ArrowRight": {
-        this.moveCursor(this.state.cursorIndex + 1)
+        this.setState(moveCursorDelta(+1))
         break
       }
     }
   }
 
-  // 現在のカーソル位置にテキストエリアに入力した文字列を挿入する
-  private fixTextarea = () => {
-    if (this.textareaElement === null) {
-      return
+  private onCompositionEnd = () => {
+    if (this.state.composition) {
+      this.setState(fixTextarea)
     }
-    const text = this.textareaElement.value
-    this.setState({
-      inputText: "",
-      cursorIndex: this.state.cursorIndex + text.length,
-      content: inserted(
-        this.state.content.split(""),
-        text,
-        this.state.cursorIndex
-      ).join("")
-    })
   }
 
-  private onCompositionEnd = (
-    e: React.CompositionEvent<HTMLTextAreaElement>
-  ) => {
-    if (this.composition) {
-      this.fixTextarea()
-    }
-    this.composition = false
-    console.log("oncompositionend", e.data)
+  private onClickContent = (e: React.MouseEvent<HTMLDivElement>) => {
+    this.setState(moveCursorWithClick(e))
   }
 
   render() {
@@ -233,7 +281,13 @@ export class Editor extends Component<{}, State> {
     return (
       <div>
         <textarea
-          ref={c => (this.textareaElement = c)}
+          ref={c => {
+            if (c !== null && c !== this.state.textareaElement) {
+              this.setState({
+                textareaElement: c
+              })
+            }
+          }}
           value={this.state.inputText}
           style={{
             position: "absolute",
@@ -245,76 +299,42 @@ export class Editor extends Component<{}, State> {
             pointerEvents: "none"
           }}
           onKeyDown={this.onKeyDown}
-          onKeyUp={e => console.log("keyup", e.key)}
-          onKeyPress={e => console.log("keypress", e.key)}
-          onInput={e => {
-            console.log("oninput", e)
-          }}
-          onChange={e => {
-            console.log("onchange", e.currentTarget.value)
-            this.onChangeTextarea(e)
-          }}
+          onChange={this.onChangeTextarea}
           onCompositionEnd={this.onCompositionEnd}
           onCompositionStart={e => {
-            this.composition = true
+            this.setState({
+              composition: true
+            })
             console.log("oncompositionstart", e.data)
           }}
           onCompositionUpdate={e => console.log("oncompositionupdate", e.data)}
         />
         <div
-          onClick={e => {
-            if (this.textareaElement === null) {
-              return
-            }
-            this.textareaElement.focus()
-            const bounds = (e.target as HTMLElement).getBoundingClientRect()
-            const isRight = e.clientX - bounds.left > bounds.width / 2
-            const cursorIndex =
-              getChildIndex(e.target as HTMLElement, isCursor) +
-              (isRight ? 1 : 0)
-            this.setState({
-              inputText: "",
-              cursorIndex
-            })
+          style={{
+            position: "absolute",
+            left: cursorRect.left,
+            top: cursorRect.top,
+            width: "3px",
+            height: cursorRect.height,
+            background: "red",
+            pointerEvents: "none"
           }}
-          onSelect={e => console.log("onselect", e)}
+        />
+        <div
+          ref={c => this.setState(updateContentElement(c))}
+          onClick={this.onClickContent}
         >
-          <div
-            style={{
-              position: "absolute",
-              left: cursorRect.left,
-              top: cursorRect.top,
-              width: "3px",
-              height: cursorRect.height,
-              background: "red",
-              pointerEvents: "none"
-            }}
-          />
-          <div
-            ref={c => {
-              if (c !== null) {
-                this.contentElement = c
-                const cursorRect = cursorRectForIndex(this.state.cursorIndex, c)
-                if (!rectEqual(cursorRect, this.state.cursorRect)) {
-                  this.setState({
-                    cursorRect
-                  })
-                }
-              }
-            }}
-          >
-            <b>
-              {inserted(
-                this.state.content.split("").map(mapContentToComponent),
-                <span style={{ pointerEvents: "none" }}>
-                  {this.state.inputText.split("").map(t => (
-                    <span>{t}</span>
-                  ))}
-                </span>,
-                this.state.cursorIndex
-              )}
-            </b>
-          </div>
+          <b>
+            {inserted(
+              this.state.content.split("").map(mapContentToComponent),
+              <span style={{ pointerEvents: "none" }}>
+                {this.state.inputText.split("").map(t => (
+                  <span>{t}</span>
+                ))}
+              </span>,
+              this.state.cursorIndex
+            )}
+          </b>
         </div>
         <div>
           <pre>{this.state.content}</pre>
