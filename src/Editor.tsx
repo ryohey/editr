@@ -14,10 +14,20 @@ const RectZero = {
   height: 0
 }
 
+const rectEqual = (rectA: IRect, rectB: IRect): boolean => {
+  return (
+    rectA.left === rectB.left &&
+    rectA.top === rectB.top &&
+    rectA.width === rectB.width &&
+    rectA.height === rectB.height
+  )
+}
+
 interface State {
   content: string
   inputText: string
   cursorIndex: number
+  cursorRect: IRect
 }
 
 function getChildIndex(
@@ -86,11 +96,54 @@ function mapContentToComponent(content: string): ReactNode {
   )
 }
 
+const cursorRectForIndex = (index: number, inElement: Element): IRect => {
+  const elems = terminalElements(inElement)
+  if (elems === null) {
+    return RectZero
+  }
+
+  // 横幅は使われない
+  const width = -1
+
+  if (elems.length === 0) {
+    return {
+      left: 0,
+      top: 0,
+      width,
+      height: 20 // TODO: 一行分の大きさを計算する
+    }
+  }
+
+  if (index === elems.length) {
+    const elem = elems[elems.length - 1]
+    const rect = elem.getBoundingClientRect()
+    return {
+      left: rect.left + rect.width,
+      top: rect.top,
+      width,
+      height: rect.height
+    }
+  }
+
+  const elem = elems[index]
+  if (elem === undefined) {
+    throw new Error(`cursorIndex が不正: ${index}/${elems.length}`)
+  }
+  const rect = elem.getBoundingClientRect()
+  return {
+    left: rect.left,
+    top: rect.top,
+    width,
+    height: rect.height
+  }
+}
+
 export class Editor extends Component<{}, State> {
   public state: State = {
     content: "Hello, world",
     inputText: "",
-    cursorIndex: 0
+    cursorIndex: 0,
+    cursorRect: RectZero
   }
 
   private textareaElement: HTMLTextAreaElement | null = null
@@ -112,31 +165,36 @@ export class Editor extends Component<{}, State> {
     }
   }
 
+  private removeCharacter(index: number) {
+    const content = removeCharacterAtIndex(this.state.content, index)
+    this.setState({
+      content,
+      cursorIndex: Math.max(0, index)
+    })
+  }
+
+  private moveCursor(index: number) {
+    if (this.contentElement === null) {
+      return
+    }
+    const elems = terminalElements(this.contentElement)
+    const maxIndex = elems !== null ? elems.length : 0
+    this.setState({
+      cursorIndex: Math.min(maxIndex, Math.max(0, index))
+    })
+  }
+
   private onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     console.log("keydown", e.key)
     switch (e.key) {
-      case "Backspace": {
-        const content = removeCharacterAtIndex(
-          this.state.content,
-          this.state.cursorIndex - 1
-        )
-        this.setState({
-          content,
-          cursorIndex: Math.max(0, this.state.cursorIndex - 1)
-        })
+      case "Backspace":
+        this.removeCharacter(this.state.cursorIndex - 1)
         break
-      }
       case "ArrowLeft":
-        this.setState({
-          cursorIndex: Math.max(0, this.state.cursorIndex - 1)
-        })
+        this.moveCursor(this.state.cursorIndex - 1)
         break
       case "ArrowRight": {
-        const elems = this.getContentTerminalElements()
-        const maxIndex = elems !== null ? elems.length : 0
-        this.setState({
-          cursorIndex: Math.min(maxIndex, this.state.cursorIndex + 1)
-        })
+        this.moveCursor(this.state.cursorIndex + 1)
         break
       }
     }
@@ -169,56 +227,8 @@ export class Editor extends Component<{}, State> {
     console.log("oncompositionend", e.data)
   }
 
-  private getContentTerminalElements = (): Element[] | null => {
-    if (this.contentElement === null) return null
-
-    return terminalElements(this.contentElement).filter(e => !isCursor(e))
-  }
-
-  private cursorRectForIndex = (index: number): IRect => {
-    const elems = this.getContentTerminalElements()
-    if (elems === null) {
-      return RectZero
-    }
-
-    // 横幅は使われない
-    const width = -1
-
-    if (elems.length === 0) {
-      return {
-        left: 0,
-        top: 0,
-        width,
-        height: 20 // TODO: 一行分の大きさを計算する
-      }
-    }
-
-    if (index === elems.length) {
-      const elem = elems[elems.length - 1]
-      const rect = elem.getBoundingClientRect()
-      return {
-        left: rect.left + rect.width,
-        top: rect.top,
-        width,
-        height: rect.height
-      }
-    }
-
-    const elem = elems[index]
-    if (elem === undefined) {
-      throw new Error(`cursorIndex が不正: ${index}/${elems.length}`)
-    }
-    const rect = elem.getBoundingClientRect()
-    return {
-      left: rect.left,
-      top: rect.top,
-      width,
-      height: rect.height
-    }
-  }
-
   render() {
-    const cursorRect = this.cursorRectForIndex(this.state.cursorIndex)
+    const { cursorRect } = this.state
 
     return (
       <div>
@@ -280,12 +290,26 @@ export class Editor extends Component<{}, State> {
               pointerEvents: "none"
             }}
           />
-          <div ref={c => (this.contentElement = c)}>
+          <div
+            ref={c => {
+              if (c !== null) {
+                this.contentElement = c
+                const cursorRect = cursorRectForIndex(this.state.cursorIndex, c)
+                if (!rectEqual(cursorRect, this.state.cursorRect)) {
+                  this.setState({
+                    cursorRect
+                  })
+                }
+              }
+            }}
+          >
             <b>
               {inserted(
                 this.state.content.split("").map(mapContentToComponent),
                 <span style={{ pointerEvents: "none" }}>
-                  {this.state.inputText}
+                  {this.state.inputText.split("").map(t => (
+                    <span>{t}</span>
+                  ))}
                 </span>,
                 this.state.cursorIndex
               )}
